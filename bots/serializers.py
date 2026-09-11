@@ -541,6 +541,9 @@ class BotValidationMixin:
         if value.get("reserve_additional_storage") and os.getenv("LAUNCH_BOT_METHOD") != "kubernetes":
             raise serializers.ValidationError({"reserve_additional_storage": "Not supported unless using Kubernetes"})
 
+        if value.get("record_screenshare_frames") and format == RecordingFormats.NONE:
+            raise serializers.ValidationError({"record_screenshare_frames": "Screenshare frames are stored with the recording, so the recording format cannot be 'none'"})
+
         return value
 
 
@@ -656,6 +659,7 @@ BOT_RECORDING_SETTINGS_DEFAULT_VALUES = {
     "record_chat_messages_when_paused": False,
     "record_async_transcription_audio_chunks": False,
     "record_participant_speech_start_stop_events": False,
+    "record_screenshare_frames": False,
     "reserve_additional_storage": False,
 }
 BOT_RECORDING_SETTINGS_SCHEMA = {
@@ -687,6 +691,11 @@ BOT_RECORDING_SETTINGS_SCHEMA = {
         "record_participant_speech_start_stop_events": {
             "type": "boolean",
             "description": "Whether to record participant speech start and stop events. Defaults to false.",
+            "default": False,
+        },
+        "record_screenshare_frames": {
+            "type": "boolean",
+            "description": "Whether to capture distinct screenshare frames and store them with the recording. Defaults to false.",
             "default": False,
         },
         "reserve_additional_storage": {
@@ -2022,6 +2031,30 @@ class ParticipantEventSerializer(serializers.Serializer):
 
     def get_event_type(self, obj):
         return ParticipantEventTypes.type_to_api_code(obj.event_type)
+
+
+@extend_schema_serializer(
+    examples=[
+        OpenApiExample(
+            "Screenshare Frame",
+            value={
+                "id": "frame_xxxxxxxxxxxxxxxx",
+                "participant_uuid": "participant_abc123",
+                "timestamp_ms": 1733114771000,
+                "width": 1920,
+                "height": 1080,
+                "url": "https://attendee-short-term-storage-production.s3.amazonaws.com/screenshare-frames/bot_xxx-rec_xxx/1733114771000-1.jpg?...",
+            },
+        )
+    ]
+)
+class ScreenshareFrameSerializer(serializers.Serializer):
+    id = serializers.CharField(source="object_id")
+    participant_uuid = serializers.CharField(source="participant.uuid", allow_null=True, help_text="The participant who was sharing, or null if unknown")
+    timestamp_ms = serializers.IntegerField(help_text="When the frame was captured, in milliseconds since the Unix epoch")
+    width = serializers.IntegerField()
+    height = serializers.IntegerField()
+    url = serializers.CharField(help_text="Temporary download URL for the JPEG. Expires after 30 minutes.")
 
 
 class PatchBotVoiceAgentSettingsSerializer(serializers.Serializer):

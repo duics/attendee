@@ -17,6 +17,8 @@ class PipelineConfiguration:
     websocket_stream_per_participant_audio: bool
     websocket_stream_per_participant_video: bool
     room_sync_stream_per_participant_audio: bool
+    # Keep distinct screenshare frames from the per-participant video path and store them with the recording
+    capture_screenshare_frames: bool = False
 
     def __post_init__(self):
         base_configurations_that_support_optional_addons = [
@@ -38,6 +40,7 @@ class PipelineConfiguration:
             "websocket_stream_per_participant_audio",
             "websocket_stream_per_participant_video",
             "room_sync_stream_per_participant_audio",
+            "capture_screenshare_frames",
         ]
 
         valid_configurations: FrozenSet[FrozenSet[str]] = frozenset(
@@ -55,7 +58,7 @@ class PipelineConfiguration:
             raise ValueError(f"Invalid configuration: {active_fields}\nMust be one of: {valid_configurations}")
 
     @classmethod
-    def recorder_bot(cls, websocket_stream_audio=False, websocket_stream_per_participant_audio=False, websocket_stream_per_participant_video=False, room_sync_stream_per_participant_audio=False) -> "PipelineConfiguration":
+    def recorder_bot(cls, websocket_stream_audio=False, websocket_stream_per_participant_audio=False, websocket_stream_per_participant_video=False, room_sync_stream_per_participant_audio=False, capture_screenshare_frames=False) -> "PipelineConfiguration":
         return cls(
             record_video=True,
             record_audio=True,
@@ -66,10 +69,11 @@ class PipelineConfiguration:
             websocket_stream_per_participant_audio=websocket_stream_per_participant_audio,
             websocket_stream_per_participant_video=websocket_stream_per_participant_video,
             room_sync_stream_per_participant_audio=room_sync_stream_per_participant_audio,
+            capture_screenshare_frames=capture_screenshare_frames,
         )
 
     @classmethod
-    def audio_recorder_bot(cls, websocket_stream_audio=False, websocket_stream_per_participant_audio=False, websocket_stream_per_participant_video=False, room_sync_stream_per_participant_audio=False) -> "PipelineConfiguration":
+    def audio_recorder_bot(cls, websocket_stream_audio=False, websocket_stream_per_participant_audio=False, websocket_stream_per_participant_video=False, room_sync_stream_per_participant_audio=False, capture_screenshare_frames=False) -> "PipelineConfiguration":
         return cls(
             record_video=False,
             record_audio=True,
@@ -80,10 +84,11 @@ class PipelineConfiguration:
             websocket_stream_per_participant_audio=websocket_stream_per_participant_audio,
             websocket_stream_per_participant_video=websocket_stream_per_participant_video,
             room_sync_stream_per_participant_audio=room_sync_stream_per_participant_audio,
+            capture_screenshare_frames=capture_screenshare_frames,
         )
 
     @classmethod
-    def pure_transcription_bot(cls, websocket_stream_audio=False, websocket_stream_per_participant_audio=False, websocket_stream_per_participant_video=False, room_sync_stream_per_participant_audio=False) -> "PipelineConfiguration":
+    def pure_transcription_bot(cls, websocket_stream_audio=False, websocket_stream_per_participant_audio=False, websocket_stream_per_participant_video=False, room_sync_stream_per_participant_audio=False, capture_screenshare_frames=False) -> "PipelineConfiguration":
         return cls(
             record_video=False,
             record_audio=False,
@@ -94,6 +99,7 @@ class PipelineConfiguration:
             websocket_stream_per_participant_audio=websocket_stream_per_participant_audio,
             websocket_stream_per_participant_video=websocket_stream_per_participant_video,
             room_sync_stream_per_participant_audio=room_sync_stream_per_participant_audio,
+            capture_screenshare_frames=capture_screenshare_frames,
         )
 
     @classmethod
@@ -108,4 +114,5 @@ class PipelineConfiguration:
             websocket_stream_per_participant_audio=False,
             websocket_stream_per_participant_video=False,
             room_sync_stream_per_participant_audio=False,
+            capture_screenshare_frames=False,
         )

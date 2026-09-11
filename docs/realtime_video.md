@@ -60,6 +60,10 @@ On Google Meet and Teams, Attendee captures the video tracks that the meeting cl
 
 Screenshare video is always delivered, since the client always renders the screenshare video.
 
+## Capturing Screenshare Frames Without a Websocket
+
+To get only the distinct screens that were shared, set `recording_settings.record_screenshare_frames` to `true` and list them through the API instead of running a websocket server. See [screenshare frames](screenshare_frames.md).
+
 ## Code Samples
 
 See [here](https://github.com/attendee-labs/realtime-per-participant-video-and-audio-example) for an example program showing how use this feature.

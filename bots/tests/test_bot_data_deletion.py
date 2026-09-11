@@ -6,7 +6,7 @@ from django.test import Client, TransactionTestCase
 from django.test.utils import override_settings
 from rest_framework import status
 
-from bots.models import ApiKey, AudioChunk, Bot, BotDebugScreenshot, BotEvent, BotEventTypes, BotStates, ChatMessage, ChatMessageToOptions, Organization, Participant, ParticipantEvent, ParticipantEventTypes, Project, Recording, RecordingStates, Utterance, WebhookDeliveryAttempt, WebhookSubscription, WebhookTriggerTypes
+from bots.models import ApiKey, AudioChunk, Bot, BotDebugScreenshot, BotEvent, BotEventTypes, BotStates, ChatMessage, ChatMessageToOptions, Organization, Participant, ParticipantEvent, ParticipantEventTypes, Project, Recording, RecordingStates, ScreenshareFrame, Utterance, WebhookDeliveryAttempt, WebhookSubscription, WebhookTriggerTypes
 
 
 def mock_file_field_delete_sets_name_to_none(instance, save=True):
@@ -116,6 +116,12 @@ class TestBotDataDeletion(TransactionTestCase):
         self.utterance1 = Utterance.objects.create(recording=self.recording1, participant=self.participant1, audio_chunk=self.audio_chunk1, timestamp_ms=1000, duration_ms=500)
         self.utterance2 = Utterance.objects.create(recording=self.recording2, participant=self.participant2, audio_chunk=self.audio_chunk2, timestamp_ms=1000, duration_ms=500)
 
+        # Create screenshare frames for each recording
+        self.screenshare_frame1 = ScreenshareFrame.objects.create(recording=self.recording1, participant=self.participant1, timestamp_ms=1000, dhash="a5a5a5a5a5a5a5a5", width=1920, height=1080)
+        self.screenshare_frame1.file.save("frame1.jpg", ContentFile(b"test frame 1"))
+        self.screenshare_frame2 = ScreenshareFrame.objects.create(recording=self.recording2, participant=self.participant2, timestamp_ms=1000, dhash="a5a5a5a5a5a5a5a5", width=1920, height=1080)
+        self.screenshare_frame2.file.save("frame2.jpg", ContentFile(b"test frame 2"))
+
         # Create chat messages for each bot
         self.chat_message1 = ChatMessage.objects.create(bot=self.bot1, to=ChatMessageToOptions.ONLY_BOT, participant=self.participant1, text="Hello, world!", timestamp=1000)
         self.chat_message2 = ChatMessage.objects.create(bot=self.bot2, to=ChatMessageToOptions.EVERYONE, participant=self.participant2, text="Hello, world!", timestamp=1000)
@@ -145,6 +151,7 @@ class TestBotDataDeletion(TransactionTestCase):
         self.assertEqual(Recording.objects.count(), 2)
         self.assertEqual(AudioChunk.objects.count(), 2)
         self.assertEqual(Utterance.objects.count(), 2)
+        self.assertEqual(ScreenshareFrame.objects.count(), 2)
         self.assertEqual(BotDebugScreenshot.objects.count(), 2)
         self.assertEqual(WebhookSubscription.objects.count(), 3)
         self.assertEqual(WebhookDeliveryAttempt.objects.count(), 8)
@@ -157,6 +164,9 @@ class TestBotDataDeletion(TransactionTestCase):
         self.assertEqual(Participant.objects.filter(bot=self.bot1).count(), 0)
         self.assertEqual(AudioChunk.objects.filter(recording__bot=self.bot1).count(), 0)
         self.assertEqual(Utterance.objects.filter(recording__bot=self.bot1).count(), 0)
+        self.assertEqual(ScreenshareFrame.objects.filter(recording__bot=self.bot1).count(), 0)
+        self.assertIn(self.screenshare_frame1.file.name, self.deleted_file_names)
+        self.assertNotIn(self.screenshare_frame2.file.name, self.deleted_file_names)
         self.assertEqual(ChatMessage.objects.filter(bot=self.bot1).count(), 0)
         self.assertEqual(BotDebugScreenshot.objects.filter(bot_event__bot=self.bot1).count(), 0)
         self.assertIn(self.screenshot1.file.name, self.deleted_file_names)
@@ -176,6 +186,7 @@ class TestBotDataDeletion(TransactionTestCase):
         self.assertEqual(Recording.objects.filter(bot=self.bot2).count(), 1)
         self.assertEqual(AudioChunk.objects.filter(recording__bot=self.bot2).count(), 1)
         self.assertEqual(Utterance.objects.filter(recording__bot=self.bot2).count(), 1)
+        self.assertEqual(ScreenshareFrame.objects.filter(recording__bot=self.bot2).count(), 1)
         self.assertEqual(ChatMessage.objects.filter(bot=self.bot2).count(), 1)
         self.assertEqual(BotDebugScreenshot.objects.filter(bot_event__bot=self.bot2).count(), 1)
         self.assertEqual(ParticipantEvent.objects.filter(participant__bot=self.bot2).count(), 2)
@@ -254,6 +265,7 @@ class TestBotDataDeletion(TransactionTestCase):
         self.assertEqual(Participant.objects.filter(bot=self.bot1).count(), 1)
         self.assertEqual(AudioChunk.objects.filter(recording__bot=self.bot1).count(), 1)
         self.assertEqual(Utterance.objects.filter(recording__bot=self.bot1).count(), 1)
+        self.assertEqual(ScreenshareFrame.objects.filter(recording__bot=self.bot1).count(), 1)
 
     def test_delete_data_multiple_recordings(self):
         """Test that delete_data deletes data from multiple recordings"""

@@ -40,6 +40,7 @@ from .models import (
     ParticipantEvent,
     Recording,
     RecordingViews,
+    ScreenshareFrame,
     Utterance,
 )
 from .serializers import (
@@ -56,6 +57,7 @@ from .serializers import (
     PatchBotSerializer,
     PatchBotVoiceAgentSettingsSerializer,
     RecordingSerializer,
+    ScreenshareFrameSerializer,
     SpeechSerializer,
     TranscriptUtteranceSerializer,
 )
@@ -1602,6 +1604,118 @@ class ParticipantEventsView(GenericAPIView):
                 return self.get_paginated_response(serializer.data)
 
             serializer = self.get_serializer(events, many=True)
+            return Response(serializer.data)
+
+        except Bot.DoesNotExist:
+            return Response({"error": "Bot not found"}, status=status.HTTP_404_NOT_FOUND)
+
+
+class ScreenshareFrameCursorPagination(CursorPagination):
+    ordering = "created_at"
+    page_size = 25
+
+
+class ScreenshareFramesView(GenericAPIView):
+    authentication_classes = [ApiKeyAuthentication]
+    pagination_class = ScreenshareFrameCursorPagination
+    serializer_class = ScreenshareFrameSerializer
+
+    @extend_schema(
+        operation_id="Get Screenshare Frames",
+        summary="Get screenshare frames for a bot",
+        description="Returns the screenshare frames captured for a bot. Results are paginated using cursor pagination.",
+        responses={
+            200: OpenApiResponse(
+                response=ScreenshareFrameSerializer(many=True),
+                description="List of screenshare frames",
+            ),
+            404: OpenApiResponse(description="Bot not found"),
+        },
+        parameters=[
+            *TokenHeaderParameter,
+            OpenApiParameter(
+                name="object_id",
+                type=str,
+                location=OpenApiParameter.PATH,
+                description="Bot ID",
+                examples=[OpenApiExample("Bot ID Example", value="bot_xxxxxxxxxxx")],
+            ),
+            OpenApiParameter(
+                name="after",
+                type={"type": "string", "format": "ISO 8601 datetime"},
+                location=OpenApiParameter.QUERY,
+                description="Only return screenshare frames created after this time. Useful when polling for updates.",
+                required=False,
+                examples=[OpenApiExample("DateTime Example", value="2024-01-18T12:34:56Z")],
+            ),
+            OpenApiParameter(
+                name="before",
+                type={"type": "string", "format": "ISO 8601 datetime"},
+                location=OpenApiParameter.QUERY,
+                description="Only return screenshare frames created before this time.",
+                required=False,
+                examples=[OpenApiExample("DateTime Example", value="2024-01-18T13:34:56Z")],
+            ),
+            OpenApiParameter(
+                name="cursor",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                description="Cursor for pagination",
+                required=False,
+            ),
+        ],
+        tags=["Bots"],
+    )
+    def get(self, request, object_id):
+        try:
+            # Get the bot and verify it belongs to the project
+            bot = Bot.objects.get(object_id=object_id, project=request.auth.project)
+
+            # Get optional after and before parameters
+            after = request.query_params.get("after")
+            before = request.query_params.get("before")
+
+            # Frames still uploading have no file yet and are not shown
+            frames_query = ScreenshareFrame.objects.filter(recording__bot=bot).exclude(file="").select_related("participant")
+
+            # Filter by after if provided
+            if after:
+                try:
+                    after_datetime = parse_datetime(str(after))
+                except Exception:
+                    after_datetime = None
+
+                if not after_datetime:
+                    return Response(
+                        {"error": "Invalid after format. Use ISO 8601 format (e.g., 2024-01-18T12:34:56Z)"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                frames_query = frames_query.filter(created_at__gt=after_datetime)
+
+            # Filter by before if provided
+            if before:
+                try:
+                    before_datetime = parse_datetime(str(before))
+                except Exception:
+                    before_datetime = None
+
+                if not before_datetime:
+                    return Response(
+                        {"error": "Invalid before format. Use ISO 8601 format (e.g., 2024-01-18T12:34:56Z)"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                frames_query = frames_query.filter(created_at__lt=before_datetime)
+
+            # Apply ordering for cursor pagination
+            frames = frames_query.order_by("created_at")
+
+            # Let the pagination class handle the rest
+            page = self.paginate_queryset(frames)
+            if page is not None:
+                serializer = self.get_serializer(page, many=True)
+                return self.get_paginated_response(serializer.data)
+
+            serializer = self.get_serializer(frames, many=True)
             return Response(serializer.data)
 
         except Bot.DoesNotExist:

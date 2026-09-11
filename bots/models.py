@@ -908,6 +908,13 @@ class Bot(models.Model):
             recording.audio_chunks.all().delete()
             recording.utterances.all().delete()
 
+            # Delete all screenshare frames and their image files
+            screenshare_frames = recording.screenshare_frames.all()
+            for screenshare_frame in screenshare_frames:
+                if screenshare_frame.file and screenshare_frame.file.name:
+                    screenshare_frame.file.delete()
+            screenshare_frames.delete()
+
             # Delete the actual recording file if it exists
             if recording.file and recording.file.name:
                 recording.file.delete()
@@ -1182,6 +1189,12 @@ class Bot(models.Model):
         if recording_settings is None:
             recording_settings = {}
         return recording_settings.get("record_participant_speech_start_stop_events", False)
+
+    def record_screenshare_frames(self):
+        recording_settings = self.settings.get("recording_settings", {})
+        if recording_settings is None:
+            recording_settings = {}
+        return recording_settings.get("record_screenshare_frames", False)
 
     def recording_type(self):
         # Recording type is derived from the recording format
@@ -2670,6 +2683,43 @@ class AsyncTranscriptionManager:
         async_transcription.save()
 
         cls.delivery_webhook(async_transcription)
+
+
+class ScreenshareFrame(models.Model):
+    """A distinct screenshare frame captured during the meeting, deduplicated in the bot with a perceptual hash."""
+
+    OBJECT_ID_PREFIX = "frame_"
+    object_id = models.CharField(max_length=32, unique=True, editable=False)
+
+    recording = models.ForeignKey(Recording, on_delete=models.CASCADE, related_name="screenshare_frames")
+    participant = models.ForeignKey(Participant, on_delete=models.SET_NULL, null=True, blank=True, related_name="screenshare_frames")
+
+    # Milliseconds since the Unix epoch, same clock as utterances
+    timestamp_ms = models.BigIntegerField()
+    # 64-bit dHash as 16 hex characters
+    dhash = models.CharField(max_length=16)
+    width = models.IntegerField()
+    height = models.IntegerField()
+
+    file = models.FileField(storage=StorageAlias("recordings"))
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def save(self, *args, **kwargs):
+        if not self.object_id:
+            # Generate a random 16-character string
+            random_string = "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(16))
+            self.object_id = f"{self.OBJECT_ID_PREFIX}{random_string}"
+        super().save(*args, **kwargs)
+
+    @property
+    def url(self):
+        if not self.file.name:
+            return None
+
+        return remote_storage_url(self.file)
+
+    def __str__(self):
+        return f"Screenshare frame {self.object_id} for {self.recording.bot.object_id}"
 
 
 # If is_blob_stored_remotely is True:

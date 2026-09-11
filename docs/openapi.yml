@@ -926,6 +926,89 @@ paths:
           description: Bot is not in a valid state to resume recording
         '404':
           description: Bot not found
+  /api/v1/bots/{object_id}/screenshare_frames:
+    get:
+      operationId: Get Screenshare Frames
+      description: Returns the screenshare frames captured for a bot. Results are
+        paginated using cursor pagination.
+      summary: Get screenshare frames for a bot
+      parameters:
+      - in: header
+        name: Authorization
+        schema:
+          type: string
+          default: Token YOUR_API_KEY_HERE
+        description: API key for authentication
+        required: true
+      - in: header
+        name: Content-Type
+        schema:
+          type: string
+          default: application/json
+        description: Should always be application/json
+        required: true
+      - in: query
+        name: after
+        schema:
+          type: string
+          format: ISO 8601 datetime
+        description: Only return screenshare frames created after this time. Useful
+          when polling for updates.
+        examples:
+          DateTimeExample:
+            value: '2024-01-18T12:34:56Z'
+            summary: DateTime Example
+      - in: query
+        name: before
+        schema:
+          type: string
+          format: ISO 8601 datetime
+        description: Only return screenshare frames created before this time.
+        examples:
+          DateTimeExample:
+            value: '2024-01-18T13:34:56Z'
+            summary: DateTime Example
+      - in: query
+        name: cursor
+        schema:
+          type: string
+        description: Cursor for pagination
+      - in: path
+        name: object_id
+        schema:
+          type: string
+        description: Bot ID
+        required: true
+        examples:
+          BotIDExample:
+            value: bot_xxxxxxxxxxx
+            summary: Bot ID Example
+      tags:
+      - Bots
+      security:
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedScreenshareFrameList'
+              examples:
+                ScreenshareFrame:
+                  value:
+                    next: http://api.example.org/accounts/?cursor=cD00ODY%3D"
+                    previous: http://api.example.org/accounts/?cursor=cj0xJnA9NDg3
+                    results:
+                    - id: frame_xxxxxxxxxxxxxxxx
+                      participant_uuid: participant_abc123
+                      timestamp_ms: 1733114771000
+                      width: 1920
+                      height: 1080
+                      url: https://attendee-short-term-storage-production.s3.amazonaws.com/screenshare-frames/bot_xxx-rec_xxx/1733114771000-1.jpg?...
+                  summary: Screenshare Frame
+          description: List of screenshare frames
+        '404':
+          description: Bot not found
   /api/v1/bots/{object_id}/send_chat_message:
     post:
       operationId: Send Chat Message
@@ -2669,6 +2752,11 @@ components:
               description: Whether to record chat messages even when the recording
                 is paused. Defaults to false.
               default: false
+            record_screenshare_frames:
+              type: boolean
+              description: Whether to capture distinct screenshare frames and store them
+                with the recording. Defaults to false.
+              default: false
             reserve_additional_storage:
               type: boolean
               description: Whether to reserve extra space to store the recording.
@@ -2682,6 +2770,7 @@ components:
             view: speaker_view
             resolution: 1080p
             record_chat_messages_when_paused: false
+            record_screenshare_frames: false
             reserve_additional_storage: false
           description: The settings for the bot's recording.
         google_meet_settings:
@@ -3073,6 +3162,25 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Participant'
+    PaginatedScreenshareFrameList:
+      type: object
+      required:
+      - results
+      properties:
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?cursor=cD00ODY%3D"
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?cursor=cj0xJnA9NDg3
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScreenshareFrame'
     PaginatedZoomOAuthConnectionList:
       type: object
       required:
@@ -3194,6 +3302,11 @@ components:
               description: Whether to record additional audio data which is needed
                 for creating async (post-meeting) transcriptions. Defaults to false.
               default: false
+            record_screenshare_frames:
+              type: boolean
+              description: Whether to capture distinct screenshare frames and store them
+                with the recording. Defaults to false.
+              default: false
             reserve_additional_storage:
               type: boolean
               description: Whether to reserve extra space to store the recording.
@@ -3261,6 +3374,33 @@ components:
       - complete
       - failed
       - paused
+    ScreenshareFrame:
+      type: object
+      properties:
+        id:
+          type: string
+        participant_uuid:
+          type: string
+          nullable: true
+          description: The participant who was sharing, or null if unknown
+        timestamp_ms:
+          type: integer
+          description: When the frame was captured, in milliseconds since the Unix
+            epoch
+        width:
+          type: integer
+        height:
+          type: integer
+        url:
+          type: string
+          description: Temporary download URL for the JPEG. Expires after 30 minutes.
+      required:
+      - height
+      - id
+      - participant_uuid
+      - timestamp_ms
+      - url
+      - width
     SpeechRequest:
       type: object
       properties:

@@ -99,6 +99,11 @@ urlpatterns = [
         bots_api_views.ParticipantsView.as_view(),
         name="bot-participants",
     ),
+    path(
+        "bots/<str:object_id>/screenshare_frames",
+        bots_api_views.ScreenshareFramesView.as_view(),
+        name="bot-screenshare-frames",
+    ),
 ]
 
 # catch any other paths and return a 404 json response - must be last

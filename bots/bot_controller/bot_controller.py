@@ -52,6 +52,7 @@ from bots.models import (
     RecordingFormats,
     RecordingManager,
     RecordingTypes,
+    ScreenshareFrame,
     TranscriptionProviders,
     Utterance,
     WebhookTriggerTypes,
@@ -80,6 +81,8 @@ from .realtime_audio_output_manager import RealtimeAudioOutputManager
 from .rtmp_client import RTMPClient
 from .s3_file_uploader import S3FileUploader
 from .screen_and_audio_recorder import ScreenAndAudioRecorder
+from .screenshare_frame_capturer import SCREENSHARE_FRAME_CAPTURE_RESOLUTION, KeptScreenshareFrame, ScreenshareFrameCapturer, dhash_to_hex
+from .screenshare_frame_uploader import ScreenshareFrameUploader
 from .video_output_manager import VideoOutputManager
 from .webpage_streamer_manager import WebpageStreamerManager
 
@@ -118,7 +121,14 @@ class BotController:
         return self.save_utterances_for_individual_audio_chunks() or self.bot_in_db.record_async_transcription_audio_chunks()
 
     def disable_incoming_video_for_web_bots(self):
-        return not (self.pipeline_configuration.record_video or self.pipeline_configuration.rtmp_stream_video or self.pipeline_configuration.websocket_stream_per_participant_video)
+        return not (self.pipeline_configuration.record_video or self.pipeline_configuration.rtmp_stream_video or self.should_receive_per_participant_video_frames())
+
+    # Needed for websocket video streaming and for screenshare frame capture
+    def should_receive_per_participant_video_frames(self):
+        return self.pipeline_configuration.websocket_stream_per_participant_video or self.pipeline_configuration.capture_screenshare_frames
+
+    def get_per_participant_video_frame_callback(self):
+        return self.add_per_participant_video_frame_callback if self.should_receive_per_participant_video_frames() else None
 
     def should_modify_dom_for_video_recording_for_web_bots(self):
         return self.pipeline_configuration.record_video or self.pipeline_configuration.rtmp_stream_video
@@ -204,7 +214,7 @@ class BotController:
             add_video_frame_callback=None,
             wants_any_video_frames_callback=None,
             add_mixed_audio_chunk_callback=self.add_mixed_audio_chunk_callback if self.pipeline_configuration.websocket_stream_audio else None,
-            add_per_participant_video_frame_callback=self.add_per_participant_video_frame_callback if self.pipeline_configuration.websocket_stream_per_participant_video else None,
+            add_per_participant_video_frame_callback=self.get_per_participant_video_frame_callback(),
             upsert_caption_callback=self.closed_caption_manager.upsert_caption if self.save_utterances_for_closed_captions() else None,
             upsert_chat_message_callback=self.on_new_chat_message,
             add_participant_event_callback=self.on_new_participant_event,
@@ -277,7 +287,7 @@ class BotController:
             add_video_frame_callback=None,
             wants_any_video_frames_callback=None,
             add_mixed_audio_chunk_callback=self.add_mixed_audio_chunk_callback if self.pipeline_configuration.websocket_stream_audio else None,
-            add_per_participant_video_frame_callback=self.add_per_participant_video_frame_callback if self.pipeline_configuration.websocket_stream_per_participant_video else None,
+            add_per_participant_video_frame_callback=self.get_per_participant_video_frame_callback(),
             upsert_caption_callback=self.closed_caption_manager.upsert_caption if self.save_utterances_for_closed_captions() else None,
             upsert_chat_message_callback=self.on_new_chat_message,
             add_participant_event_callback=self.on_new_participant_event,
@@ -355,7 +365,7 @@ class BotController:
             add_video_frame_callback=None,
             wants_any_video_frames_callback=None,
             add_mixed_audio_chunk_callback=self.add_mixed_audio_chunk_callback if self.pipeline_configuration.websocket_stream_audio else None,
-            add_per_participant_video_frame_callback=self.add_per_participant_video_frame_callback if self.pipeline_configuration.websocket_stream_per_participant_video else None,
+            add_per_participant_video_frame_callback=self.get_per_participant_video_frame_callback(),
             upsert_caption_callback=self.closed_caption_manager.upsert_caption if self.save_utterances_for_closed_captions() else None,
             upsert_chat_message_callback=self.on_new_chat_message,
             add_participant_event_callback=self.on_new_participant_event,
@@ -397,7 +407,7 @@ class BotController:
             add_video_frame_callback=self.gstreamer_pipeline.on_new_video_frame if self.gstreamer_pipeline else None,
             wants_any_video_frames_callback=self.gstreamer_pipeline.wants_any_video_frames if self.gstreamer_pipeline else lambda: False,
             add_mixed_audio_chunk_callback=self.add_mixed_audio_chunk_callback,
-            add_per_participant_video_frame_callback=self.add_per_participant_video_frame_callback if self.pipeline_configuration.websocket_stream_per_participant_video else None,
+            add_per_participant_video_frame_callback=self.get_per_participant_video_frame_callback(),
             upsert_chat_message_callback=self.on_new_chat_message,
             add_participant_event_callback=self.on_new_participant_event,
             automatic_leave_configuration=self.automatic_leave_configuration,
@@ -433,6 +443,9 @@ class BotController:
         )
 
     def add_per_participant_video_frame_callback(self, frame: bytes, participant_uuid: str, source: str):
+        if self.screenshare_frame_capturer:
+            self.screenshare_frame_capturer.add_frame(frame=frame, participant_uuid=participant_uuid, source=source)
+
         if not self.websocket_client_manager:
             return
 
@@ -595,6 +608,9 @@ class BotController:
     def generate_audio_blob_remote_filename(self, audio_chunk: AudioChunk, recording: Recording):
         return f"audio-blobs/{self.bot_in_db.object_id}-{recording.object_id}/audio-chunk-{audio_chunk.id}.pcm"
 
+    def generate_screenshare_frame_remote_filename(self, screenshare_frame: ScreenshareFrame, recording: Recording):
+        return f"screenshare-frames/{self.bot_in_db.object_id}-{recording.object_id}/{screenshare_frame.timestamp_ms}-{screenshare_frame.id}.jpg"
+
     def get_recording_filename(self):
         recording = Recording.objects.get(bot=self.bot_in_db, is_default_recording=True)
         return f"{self.bot_in_db.object_id}-{recording.object_id}.{self.bot_in_db.recording_format()}"
@@ -741,6 +757,9 @@ class BotController:
         if self.audio_chunk_uploader:
             self.audio_chunk_uploader.shutdown()
 
+        if self.screenshare_frame_uploader:
+            self.screenshare_frame_uploader.shutdown()
+
         self.save_bot_pod_logs()
 
         if self.bot_in_db.state == BotStates.POST_PROCESSING:
@@ -779,14 +798,29 @@ class BotController:
 
         self.automatic_leave_configuration = AutomaticLeaveConfiguration(**self.bot_in_db.automatic_leave_settings())
 
-        self.per_participant_realtime_video_configuration = PerParticipantRealtimeVideoConfiguration(
-            webcam_configuration=PerParticipantRealtimeVideoSourceConfiguration(resolution=self.bot_in_db.websocket_per_participant_video_webcam_resolution()),
-            screenshare_configuration=PerParticipantRealtimeVideoSourceConfiguration(resolution=self.bot_in_db.websocket_per_participant_video_screenshare_resolution()),
-        )
-
         self.pipeline_configuration = self.get_pipeline_configuration()
 
+        self.per_participant_realtime_video_configuration = self.get_per_participant_realtime_video_configuration()
+
+        self.screenshare_frame_capturer = None
+        self.screenshare_frame_uploader = None
+
         self.main_thread_executor = MainThreadExecutor()
+
+    def get_per_participant_realtime_video_configuration(self):
+        webcam_resolution = self.bot_in_db.websocket_per_participant_video_webcam_resolution()
+        screenshare_resolution = self.bot_in_db.websocket_per_participant_video_screenshare_resolution()
+
+        # Frame capture needs 1080p screenshare video; webcams stay off unless the websocket stream asked for them
+        if self.pipeline_configuration.capture_screenshare_frames:
+            screenshare_resolution = SCREENSHARE_FRAME_CAPTURE_RESOLUTION
+            if not self.pipeline_configuration.websocket_stream_per_participant_video:
+                webcam_resolution = "none"
+
+        return PerParticipantRealtimeVideoConfiguration(
+            webcam_configuration=PerParticipantRealtimeVideoSourceConfiguration(resolution=webcam_resolution),
+            screenshare_configuration=PerParticipantRealtimeVideoSourceConfiguration(resolution=screenshare_resolution),
+        )
 
     def get_pipeline_configuration(self):
         if self.bot_in_db.rtmp_destination_url():
@@ -797,6 +831,7 @@ class BotController:
             websocket_stream_per_participant_audio=bool(self.bot_in_db.websocket_per_participant_audio_url()),
             websocket_stream_per_participant_video=bool(self.bot_in_db.websocket_per_participant_video_url()),
             room_sync_stream_per_participant_audio=self.bot_in_db.should_use_room_sync() and self.bot_in_db.room_sync_sync_to_room(),
+            capture_screenshare_frames=self.bot_in_db.record_screenshare_frames(),
         )
 
         if self.bot_in_db.recording_type() == RecordingTypes.AUDIO_ONLY:
@@ -968,6 +1003,16 @@ class BotController:
             )
 
         self.room_sync_client = self.get_room_sync_client()
+
+        if self.pipeline_configuration.capture_screenshare_frames:
+            self.screenshare_frame_uploader = ScreenshareFrameUploader(
+                on_success=self.on_screenshare_frame_upload_success,
+                on_error=self.on_screenshare_frame_upload_error,
+            )
+            self.screenshare_frame_capturer = ScreenshareFrameCapturer(
+                on_frame_kept=self.on_screenshare_frame_kept,
+                get_recording_start_timestamp_ms_callback=self.get_first_buffer_timestamp_ms,
+            )
 
         self.adapter = self.get_bot_adapter()
 
@@ -1408,6 +1453,10 @@ class BotController:
             if self.audio_chunk_uploader:
                 self.audio_chunk_uploader.process_uploads()
 
+            # Process completed screenshare frame uploads
+            if self.screenshare_frame_uploader:
+                self.screenshare_frame_uploader.process_uploads()
+
             # Monitor transcription
             self.per_participant_streaming_audio_input_manager.monitor_transcription()
 
@@ -1627,6 +1676,71 @@ class BotController:
         recording = audio_chunk.recording
         self.create_utterance_from_audio_chunk(audio_chunk, participant, recording)
 
+    def on_screenshare_frame_kept(self, kept_frame: KeptScreenshareFrame):
+        # Frames arrive on the adapter's media thread; do the database work on the main thread
+        GLib.idle_add(lambda: self.save_screenshare_frame(kept_frame))
+
+    def save_screenshare_frame(self, kept_frame: KeptScreenshareFrame):
+        try:
+            self.save_screenshare_frame_with_no_error_handling(kept_frame)
+        except Exception:
+            logger.exception("Error saving screenshare frame")
+
+    def save_screenshare_frame_with_no_error_handling(self, kept_frame: KeptScreenshareFrame):
+        recording_in_progress = self.get_recording_in_progress()
+        if recording_in_progress is None:
+            logger.warning("Warning: No recording in progress found so cannot save screenshare frame.")
+            return
+
+        participant = None
+        participant_info = self.adapter.get_participant(kept_frame.participant_uuid)
+        if participant_info:
+            participant, _ = Participant.objects.get_or_create(
+                bot=self.bot_in_db,
+                uuid=participant_info["participant_uuid"],
+                defaults={
+                    "user_uuid": participant_info["participant_user_uuid"],
+                    "full_name": participant_info["participant_full_name"],
+                    "is_the_bot": participant_info["participant_is_the_bot"],
+                    "is_host": participant_info["participant_is_host"],
+                },
+            )
+        else:
+            logger.warning(f"Warning: No participant found for screenshare frame from participant {kept_frame.participant_uuid}, saving frame without a participant")
+
+        screenshare_frame = ScreenshareFrame.objects.create(
+            recording=recording_in_progress,
+            participant=participant,
+            timestamp_ms=kept_frame.timestamp_ms,
+            dhash=dhash_to_hex(kept_frame.dhash),
+            width=kept_frame.width,
+            height=kept_frame.height,
+        )
+
+        # Uploaded async; the frame is listed by the API once its file is set on success
+        self.screenshare_frame_uploader.upload(
+            screenshare_frame_id=screenshare_frame.id,
+            filename=self.generate_screenshare_frame_remote_filename(screenshare_frame=screenshare_frame, recording=recording_in_progress),
+            data=kept_frame.jpeg_bytes,
+        )
+
+    def on_screenshare_frame_upload_success(self, screenshare_frame_id: int, stored_name: str):
+        """
+        Callback for when a screenshare frame upload completes successfully.
+        Called from the main thread via process_uploads.
+        """
+        screenshare_frame = ScreenshareFrame.objects.get(id=screenshare_frame_id)
+        screenshare_frame.file = stored_name
+        screenshare_frame.save()
+
+    def on_screenshare_frame_upload_error(self, screenshare_frame_id: int, exception: Exception):
+        """
+        Callback for when a screenshare frame upload fails.
+        Called from the main thread via process_uploads. A frame without an image is not useful, so the record is removed.
+        """
+        logger.warning(f"Screenshare frame {screenshare_frame_id} upload failed, discarding it: {exception}")
+        ScreenshareFrame.objects.filter(id=screenshare_frame_id).delete()
+
     def on_new_chat_message(self, chat_message):
         GLib.idle_add(lambda: self.upsert_chat_message(chat_message))
 
@@ -1768,6 +1882,9 @@ class BotController:
         if self.audio_chunk_uploader:
             logger.info("Flushing audio chunk uploads...")
             self.audio_chunk_uploader.wait_for_uploads()
+        if self.screenshare_frame_uploader:
+            logger.info("Flushing screenshare frame uploads...")
+            self.screenshare_frame_uploader.wait_for_uploads()
 
     def save_debug_recording(self):
         try:
