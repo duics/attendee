@@ -57,6 +57,61 @@
     };
   })();
 
+// Mean absolute grayscale difference (0-255) below which a sampled frame counts as unchanged in on_change mode
+const REALTIME_VIDEO_FRAME_CHANGE_THRESHOLD = 2.0;
+const REALTIME_VIDEO_FINGERPRINT_WIDTH = 32;
+const REALTIME_VIDEO_FINGERPRINT_HEIGHT = 18;
+
+// Compares each sampled frame with the last frame sent for one participant + source
+const createRealtimeVideoFrameChangeDetector = () => {
+    const width = REALTIME_VIDEO_FINGERPRINT_WIDTH;
+    const height = REALTIME_VIDEO_FINGERPRINT_HEIGHT;
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+
+    let lastSentFingerprint = null;
+    let candidateFingerprint = null;
+
+    const computeFingerprint = (source, sourceWidth, sourceHeight) => {
+        ctx.drawImage(source, 0, 0, sourceWidth, sourceHeight, 0, 0, width, height);
+        const { data } = ctx.getImageData(0, 0, width, height);
+        const fingerprint = new Float32Array(width * height);
+        for (let i = 0, p = 0; i < data.length; i += 4, p++) {
+            fingerprint[p] = (data[i] * 299 + data[i + 1] * 587 + data[i + 2] * 114) / 1000;
+        }
+        return fingerprint;
+    };
+
+    return {
+        frameChanged(source, sourceWidth, sourceHeight) {
+            try {
+                candidateFingerprint = computeFingerprint(source, sourceWidth, sourceHeight);
+            } catch (err) {
+                // Fail open: treat the frame as changed
+                candidateFingerprint = null;
+                return true;
+            }
+
+            if (!lastSentFingerprint)
+                return true;
+
+            let totalDifference = 0;
+            for (let i = 0; i < candidateFingerprint.length; i++) {
+                totalDifference += Math.abs(candidateFingerprint[i] - lastSentFingerprint[i]);
+            }
+            return totalDifference / candidateFingerprint.length >= REALTIME_VIDEO_FRAME_CHANGE_THRESHOLD;
+        },
+        markSent() {
+            if (candidateFingerprint)
+                lastSentFingerprint = candidateFingerprint;
+        },
+    };
+};
+
 const handleVideoTrackForRealTimePerParticipantVideo = async ({ track, streams }) => {
     try {
         const firstStreamId = streams?.[0]?.id;
@@ -88,7 +143,19 @@ const handleVideoTrackForRealTimePerParticipantVideo = async ({ track, streams }
         const processor = new MediaStreamTrackProcessor({ track });
         const reader = processor.readable.getReader();
 
-        let lastSentAt = 0;
+        let lastSampledAt = 0;
+
+        // One detector per participant + source; the participant behind a track can change
+        const changeDetectors = new Map();
+        const getChangeDetector = (participantId, isScreenShare) => {
+            const key = `${participantId}:${isScreenShare ? "screenshare" : "webcam"}`;
+            let changeDetector = changeDetectors.get(key);
+            if (!changeDetector) {
+                changeDetector = createRealtimeVideoFrameChangeDetector();
+                changeDetectors.set(key, changeDetector);
+            }
+            return changeDetector;
+        };
 
         while (true) {
             const { value: frame, done } = await reader.read();
@@ -97,7 +164,7 @@ const handleVideoTrackForRealTimePerParticipantVideo = async ({ track, streams }
 
             try {
                 const now = performance.now();
-                if (now - lastSentAt < minFrameIntervalMs) continue;
+                if (now - lastSampledAt < minFrameIntervalMs) continue;
 
                 const physicalStream = mappingManager.physicalStreamsByServerStreamId.get(firstStreamId);
                 const clientStreamId = physicalStream?.clientStreamId;
@@ -115,7 +182,7 @@ const handleVideoTrackForRealTimePerParticipantVideo = async ({ track, streams }
                 const sourceConfig = isScreenShare ? videoConfig.screenshare_configuration : videoConfig.webcam_configuration;
                 if (!sourceConfig.enabled) continue;
 
-                if (now - lastSentAt < 1000 / sourceConfig.framerate) continue;
+                if (now - lastSampledAt < 1000 / sourceConfig.framerate) continue;
 
                 const { canvas, ctx } = isScreenShare ? screenshareCanvasContext : webcamCanvasContext;
 
@@ -126,6 +193,13 @@ const handleVideoTrackForRealTimePerParticipantVideo = async ({ track, streams }
                 const srcW = frame.displayWidth;
                 const srcH = frame.displayHeight;
                 if (!srcW || !srcH) continue;
+
+                const changeDetector = sourceConfig.frame_delivery === "on_change" ? getChangeDetector(participantId, isScreenShare) : null;
+                if (changeDetector && !changeDetector.frameChanged(frame, srcW, srcH)) {
+                    // Unchanged picture: skip this sample
+                    lastSampledAt = now;
+                    continue;
+                }
 
                 const srcAspect = srcW / srcH;
                 const targetAspect = targetWidth / targetHeight;
@@ -149,7 +223,8 @@ const handleVideoTrackForRealTimePerParticipantVideo = async ({ track, streams }
                 const base64 = canvas.toDataURL("image/jpeg", jpegQuality).split(",", 2)[1];
                 window.ws?.sendPerParticipantVideo(participantId, isScreenShare, base64);
 
-                lastSentAt = now;
+                changeDetector?.markSent();
+                lastSampledAt = now;
             } catch (err) {
                 console.error("Error processing frame:", err);
             } finally {

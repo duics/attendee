@@ -780,8 +780,14 @@ class BotController:
         self.automatic_leave_configuration = AutomaticLeaveConfiguration(**self.bot_in_db.automatic_leave_settings())
 
         self.per_participant_realtime_video_configuration = PerParticipantRealtimeVideoConfiguration(
-            webcam_configuration=PerParticipantRealtimeVideoSourceConfiguration(resolution=self.bot_in_db.websocket_per_participant_video_webcam_resolution()),
-            screenshare_configuration=PerParticipantRealtimeVideoSourceConfiguration(resolution=self.bot_in_db.websocket_per_participant_video_screenshare_resolution()),
+            webcam_configuration=PerParticipantRealtimeVideoSourceConfiguration(
+                resolution=self.bot_in_db.websocket_per_participant_video_webcam_resolution(),
+                frame_delivery=self.bot_in_db.websocket_per_participant_video_webcam_frame_delivery(),
+            ),
+            screenshare_configuration=PerParticipantRealtimeVideoSourceConfiguration(
+                resolution=self.bot_in_db.websocket_per_participant_video_screenshare_resolution(),
+                frame_delivery=self.bot_in_db.websocket_per_participant_video_screenshare_frame_delivery(),
+            ),
         )
 
         self.pipeline_configuration = self.get_pipeline_configuration()

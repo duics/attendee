@@ -1084,6 +1084,18 @@ WEBSOCKET_SETTINGS_SCHEMA = {
                     "default": "360p",
                     "description": "Resolution for per-participant screenshare video. 'none' disables screenshare streaming. Framerate and JPEG quality are determined by resolution: 360p (2fps, quality 70), 720p (1fps, quality 60), 1080p (1fps, quality 50). Defaults to '360p'.",
                 },
+                "webcam_frame_delivery": {
+                    "type": "string",
+                    "enum": ["continuous", "on_change"],
+                    "default": "continuous",
+                    "description": "When to send per-participant webcam frames: 'continuous' sends at the fixed framerate, 'on_change' only when the picture changed. Defaults to 'continuous'.",
+                },
+                "screenshare_frame_delivery": {
+                    "type": "string",
+                    "enum": ["continuous", "on_change"],
+                    "default": "continuous",
+                    "description": "When to send per-participant screenshare frames: 'continuous' sends at the fixed framerate, 'on_change' only when the picture changed. Defaults to 'continuous'.",
+                },
             },
             "required": ["url"],
             "additionalProperties": False,

@@ -24,6 +24,61 @@ if (window.googleMeetInitialData.disableIncomingVideo) {
     disableIncomingVideoViaLocalStorage();
 }
 
+// Mean absolute grayscale difference (0-255) below which a sampled frame counts as unchanged in on_change mode
+const REALTIME_VIDEO_FRAME_CHANGE_THRESHOLD = 2.0;
+const REALTIME_VIDEO_FINGERPRINT_WIDTH = 32;
+const REALTIME_VIDEO_FINGERPRINT_HEIGHT = 18;
+
+// Compares each sampled frame with the last frame sent for one participant + source
+const createRealtimeVideoFrameChangeDetector = () => {
+    const width = REALTIME_VIDEO_FINGERPRINT_WIDTH;
+    const height = REALTIME_VIDEO_FINGERPRINT_HEIGHT;
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+
+    let lastSentFingerprint = null;
+    let candidateFingerprint = null;
+
+    const computeFingerprint = (source, sourceWidth, sourceHeight) => {
+        ctx.drawImage(source, 0, 0, sourceWidth, sourceHeight, 0, 0, width, height);
+        const { data } = ctx.getImageData(0, 0, width, height);
+        const fingerprint = new Float32Array(width * height);
+        for (let i = 0, p = 0; i < data.length; i += 4, p++) {
+            fingerprint[p] = (data[i] * 299 + data[i + 1] * 587 + data[i + 2] * 114) / 1000;
+        }
+        return fingerprint;
+    };
+
+    return {
+        frameChanged(source, sourceWidth, sourceHeight) {
+            try {
+                candidateFingerprint = computeFingerprint(source, sourceWidth, sourceHeight);
+            } catch (err) {
+                // Fail open: treat the frame as changed
+                candidateFingerprint = null;
+                return true;
+            }
+
+            if (!lastSentFingerprint)
+                return true;
+
+            let totalDifference = 0;
+            for (let i = 0; i < candidateFingerprint.length; i++) {
+                totalDifference += Math.abs(candidateFingerprint[i] - lastSentFingerprint[i]);
+            }
+            return totalDifference / candidateFingerprint.length >= REALTIME_VIDEO_FRAME_CHANGE_THRESHOLD;
+        },
+        markSent() {
+            if (candidateFingerprint)
+                lastSentFingerprint = candidateFingerprint;
+        },
+    };
+};
+
 const handleVideoTrackForRealTimePerParticipantVideo = async ({ track, streams }) => {
     try {
         const firstStreamId = streams?.[0]?.id;
@@ -60,7 +115,9 @@ const handleVideoTrackForRealTimePerParticipantVideo = async ({ track, streams }
 
         const desiredFPS = sourceConfig.framerate;
         const frameIntervalMs = 1000 / desiredFPS;
-        let lastSentAt = 0;
+        let lastSampledAt = 0;
+
+        const changeDetector = sourceConfig.frame_delivery === "on_change" ? createRealtimeVideoFrameChangeDetector() : null;
 
         const targetWidth = sourceConfig.width;
         const targetHeight = sourceConfig.height;
@@ -79,13 +136,19 @@ const handleVideoTrackForRealTimePerParticipantVideo = async ({ track, streams }
 
             try {
                 const now = performance.now();
-                const shouldSend = now - lastSentAt >= frameIntervalMs;
+                const shouldSample = now - lastSampledAt >= frameIntervalMs;
 
-                if (!shouldSend) continue;
+                if (!shouldSample) continue;
 
                 const srcW = frame.displayWidth;
                 const srcH = frame.displayHeight;
                 if (!srcW || !srcH) continue;
+
+                if (changeDetector && !changeDetector.frameChanged(frame, srcW, srcH)) {
+                    // Unchanged picture: skip this sample
+                    lastSampledAt = now;
+                    continue;
+                }
 
                 const srcAspect = srcW / srcH;
                 const targetAspect = targetWidth / targetHeight;
@@ -109,7 +172,8 @@ const handleVideoTrackForRealTimePerParticipantVideo = async ({ track, streams }
                 const base64 = canvas.toDataURL("image/jpeg", jpegQuality).split(",", 2)[1];
                 window.ws?.sendPerParticipantVideo(participantId, isScreenShare, base64);
 
-                lastSentAt = now;
+                changeDetector?.markSent();
+                lastSampledAt = now;
             } catch (err) {
                 console.error("Error processing frame:", err);
             } finally {

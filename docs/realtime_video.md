@@ -14,13 +14,16 @@ To enable realtime video streaming, configure the `websocket_settings.per_partic
     "per_participant_video": {
       "url": "wss://your-server.com/attendee-websocket",
       "webcam_resolution": "360p",
-      "screenshare_resolution": "720p"
+      "screenshare_resolution": "720p",
+      "screenshare_frame_delivery": "on_change"
     }
   }
 }
 ```
 
 You can configure the resolution independently for each video source using `webcam_resolution` and `screenshare_resolution`. Supported values are `"360p"`, `"720p"`, `"1080p"`, and `"none"` (to disable that source). Both default to `"360p"`.
+
+`webcam_frame_delivery` and `screenshare_frame_delivery` choose between `"continuous"` (default) and `"on_change"` delivery, see [Frame delivery modes](#frame-delivery-modes).
 
 ## Websocket Message Format
 
@@ -39,9 +42,13 @@ Your WebSocket server will receive messages in this format.
 }
 ```
 
-The `frame` field is a base64-encoded JPEG image at the resolution you configured for that source. The `source` field is either `"webcam"` or `"screenshare"`. Frames are delivered at 2 FPS for 360p, or 1 FPS for 720p and 1080p.
+The `frame` field is a base64-encoded JPEG image at the resolution you configured for that source. The `source` field is either `"webcam"` or `"screenshare"`. Frames are delivered at 2 FPS for 360p, or 1 FPS for 720p and 1080p, unless you opt in to change-based delivery (see [Frame delivery modes](#frame-delivery-modes)).
 
 To resolve a `participant_uuid` to a full participant object, subscribe to the `participant_events.join_leave` webhook event which will send the full participant object when they join the meeting.
+
+## Frame delivery modes
+
+By default frames are sent on a fixed schedule (2 FPS for 360p, 1 FPS for 720p and 1080p) whether or not the picture changed. Set `webcam_frame_delivery` or `screenshare_frame_delivery` to `"on_change"` to only send a frame when the picture differs from the last frame sent for that participant and source. The first frame is always sent, and frames are never sent faster than the fixed framerate. Small differences such as compression noise or a blinking cursor are ignored. A gap between frames means the picture has not changed, so keep the last frame you received for each participant and source.
 
 ## Participant Selection
 

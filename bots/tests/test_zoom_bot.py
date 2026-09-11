@@ -4743,7 +4743,7 @@ class TestZoomBot(TransactionTestCase):
             screenshare_subscription = generator._subscriptions.get((2, 42))
 
             # Simulate raw I420 video frames arriving on each subscription's renderer
-            # callback. This exercises _scale_i420_to_jpeg (I420 → JPEG conversion),
+            # callback. This exercises _i420_to_bgr + _bgr_to_letterboxed_jpeg (I420 → JPEG conversion),
             # _emit_frame (base64 encoding), and the websocket delivery path.
             webcam_subscription._on_raw_video_frame_received(MockVideoFrame())
             screenshare_subscription._on_raw_video_frame_received(MockVideoFrame())

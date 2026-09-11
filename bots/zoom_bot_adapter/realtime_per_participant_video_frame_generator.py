@@ -9,6 +9,7 @@ import zoom_meeting_sdk as zoom
 from gi.repository import GLib
 
 from bots.per_participant_realtime_video_configuration import PerParticipantRealtimeVideoConfiguration
+from bots.per_participant_realtime_video_frame_change_detector import PerParticipantRealtimeVideoFrameChangeDetector
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,8 @@ class RealtimePerParticipantVideoFrameGenerator:
       - scaled to the configured resolution
       - aspect-ratio preserved with letterboxing/pillarboxing
       - encoded as JPEG
+
+    With `frame_delivery="on_change"`, a sampled frame is only forwarded when the picture changed.
 
     Usage:
 
@@ -210,28 +213,30 @@ class RealtimePerParticipantVideoFrameGenerator:
     # Internal: frame emission
     # ------------------------------------------------------------------
 
-    def _emit_frame(self, frame: bytes, participant_id: str, source: str):
+    def _emit_frame(self, frame: bytes, participant_id: str, source: str) -> bool:
         """
         Called by _PerParticipantVideoFrameSubscription when it has a JPEG to send.
-        Converts JPEG bytes to base64 string.
+        Converts JPEG bytes to base64 string. Returns True when the frame was handed to the callback.
         """
         if self.get_recording_is_paused_callback():
-            return
+            return False
         try:
             base64_jpeg = base64.b64encode(frame).decode("ascii")
             video_data_bytes = base64_jpeg.encode("utf-8")
             self.frame_callback(video_data_bytes, participant_id, source)
+            return True
         except Exception:
             logger.exception("frame_callback raised an exception for participant %s", participant_id)
+            return False
 
     # ------------------------------------------------------------------
     # Static helpers used by subscriptions
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _scale_i420_to_jpeg(data, target_width: int, target_height: int, jpeg_quality: int) -> bytes | None:
+    def _i420_to_bgr(data) -> np.ndarray | None:
         """
-        Convert a Zoom raw I420 frame to a letterboxed JPEG.
+        Convert a Zoom raw I420 frame to a BGR image at the original resolution.
 
         `data` is a Zoom raw video frame object with:
             - GetStreamWidth()
@@ -261,8 +266,17 @@ class RealtimePerParticipantVideoFrameGenerator:
             yuv = i420.reshape((orig_height * 3 // 2, orig_width))
 
             # Convert to BGR at original resolution
-            bgr = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_I420)
+            return cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_I420)
+        except Exception:
+            logger.exception("Failed to convert I420 frame to BGR")
+            return None
 
+    @staticmethod
+    def _bgr_to_letterboxed_jpeg(bgr: np.ndarray, target_width: int, target_height: int, jpeg_quality: int) -> bytes | None:
+        """
+        Scale a BGR image to target_width x target_height with letterboxing and encode it as JPEG.
+        """
+        try:
             # Letterbox / pillarbox to target_width x target_height
             h, w, _ = bgr.shape
             input_aspect = w / h
@@ -298,7 +312,7 @@ class RealtimePerParticipantVideoFrameGenerator:
 
             return jpeg.tobytes()
         except Exception:
-            logger.exception("Failed to convert I420 frame to JPEG")
+            logger.exception("Failed to convert BGR frame to JPEG")
             return None
 
 
@@ -322,7 +336,8 @@ class _PerParticipantVideoFrameSubscription:
         self.destroyed = False
 
         self.min_frame_interval_ns = int(1e9 / source_configuration.framerate)
-        self._last_sent_timestamp_ns = 0
+        self._last_sampled_timestamp_ns = 0
+        self._change_detector = PerParticipantRealtimeVideoFrameChangeDetector() if source_configuration.send_only_on_change else None
         self.raw_data_status = zoom.RawData_Off
 
         self.source = "webcam" if self.share_source_id is None else "screenshare"
@@ -380,23 +395,37 @@ class _PerParticipantVideoFrameSubscription:
 
         now_ns = time.monotonic_ns()
         # Enforce per-participant FPS
-        if now_ns - self._last_sent_timestamp_ns < self.min_frame_interval_ns:
+        if now_ns - self._last_sampled_timestamp_ns < self.min_frame_interval_ns:
             return
 
-        jpeg_bytes = RealtimePerParticipantVideoFrameGenerator._scale_i420_to_jpeg(
-            data,
+        bgr = RealtimePerParticipantVideoFrameGenerator._i420_to_bgr(data)
+
+        if bgr is None:
+            logger.info("Failed to convert I420 frame to BGR for participant %s (share_source_id %s)", self.participant_id, self.share_source_id)
+            return
+
+        # Unchanged picture: skip this sample
+        if self._change_detector is not None and not self._change_detector.frame_changed(bgr):
+            self._last_sampled_timestamp_ns = now_ns
+            return
+
+        jpeg_bytes = RealtimePerParticipantVideoFrameGenerator._bgr_to_letterboxed_jpeg(
+            bgr,
             target_width=self.source_configuration.width,
             target_height=self.source_configuration.height,
             jpeg_quality=self.source_configuration.jpeg_quality,
         )
 
         if not jpeg_bytes:
-            logger.info("Failed to convert I420 frame to JPEG for participant %s (share_source_id %s)", self.participant_id, self.share_source_id)
+            logger.info("Failed to convert BGR frame to JPEG for participant %s (share_source_id %s)", self.participant_id, self.share_source_id)
             return
 
-        self._last_sent_timestamp_ns = now_ns
+        self._last_sampled_timestamp_ns = now_ns
 
-        self.owner._emit_frame(jpeg_bytes, self.participant_id, self.source)
+        emitted = self.owner._emit_frame(jpeg_bytes, self.participant_id, self.source)
+
+        if emitted and self._change_detector is not None:
+            self._change_detector.mark_sent()
 
     def cleanup(self):
         if self.destroyed:

@@ -58,6 +58,61 @@
     interceptJsonpCallback("localJsonpCallback1");
   })();
 
+// Mean absolute grayscale difference (0-255) below which a sampled frame counts as unchanged in on_change mode
+const REALTIME_VIDEO_FRAME_CHANGE_THRESHOLD = 2.0;
+const REALTIME_VIDEO_FINGERPRINT_WIDTH = 32;
+const REALTIME_VIDEO_FINGERPRINT_HEIGHT = 18;
+
+// Compares each sampled frame with the last frame sent for one participant + source
+const createRealtimeVideoFrameChangeDetector = () => {
+    const width = REALTIME_VIDEO_FINGERPRINT_WIDTH;
+    const height = REALTIME_VIDEO_FINGERPRINT_HEIGHT;
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+
+    let lastSentFingerprint = null;
+    let candidateFingerprint = null;
+
+    const computeFingerprint = (source, sourceWidth, sourceHeight) => {
+        ctx.drawImage(source, 0, 0, sourceWidth, sourceHeight, 0, 0, width, height);
+        const { data } = ctx.getImageData(0, 0, width, height);
+        const fingerprint = new Float32Array(width * height);
+        for (let i = 0, p = 0; i < data.length; i += 4, p++) {
+            fingerprint[p] = (data[i] * 299 + data[i + 1] * 587 + data[i + 2] * 114) / 1000;
+        }
+        return fingerprint;
+    };
+
+    return {
+        frameChanged(source, sourceWidth, sourceHeight) {
+            try {
+                candidateFingerprint = computeFingerprint(source, sourceWidth, sourceHeight);
+            } catch (err) {
+                // Fail open: treat the frame as changed
+                candidateFingerprint = null;
+                return true;
+            }
+
+            if (!lastSentFingerprint)
+                return true;
+
+            let totalDifference = 0;
+            for (let i = 0; i < candidateFingerprint.length; i++) {
+                totalDifference += Math.abs(candidateFingerprint[i] - lastSentFingerprint[i]);
+            }
+            return totalDifference / candidateFingerprint.length >= REALTIME_VIDEO_FRAME_CHANGE_THRESHOLD;
+        },
+        markSent() {
+            if (candidateFingerprint)
+                lastSentFingerprint = candidateFingerprint;
+        },
+    };
+};
+
 // Captures per-participant webcam/screenshare video by periodically scanning
 // Zoom <video-player> elements and reconciling that scan with active captures.
 class PerParticipantVideoCaptureManager {
@@ -411,6 +466,7 @@ class PerParticipantVideoCaptureManager {
         const targetWidth = sourceConfig.width;
         const targetHeight = sourceConfig.height;
         const jpegQuality = (sourceConfig.jpeg_quality ?? 80) / 100;
+        const frameDelivery = sourceConfig.frame_delivery ?? 'continuous';
 
         if (!targetWidth || !targetHeight) {
             this.throttledLogAndSend({
@@ -447,6 +503,7 @@ class PerParticipantVideoCaptureManager {
             ctx,
             captureIntervalId: null,
             inFlight: false,
+            changeDetector: frameDelivery === 'on_change' ? createRealtimeVideoFrameChangeDetector() : null,
         };
 
         const captureFrame = async () => {
@@ -485,6 +542,9 @@ class PerParticipantVideoCaptureManager {
 
                 if (!didDraw) return;
 
+                // Unchanged picture: skip this sample
+                if (capture.changeDetector && !capture.changeDetector.frameChanged(targetCanvas, targetWidth, targetHeight)) return;
+
                 const base64 = targetCanvas.toDataURL('image/jpeg', jpegQuality).split(',', 2)[1];
                 if (!base64) return;
 
@@ -493,6 +553,8 @@ class PerParticipantVideoCaptureManager {
                     capture.isScreenShare,
                     base64
                 );
+
+                capture.changeDetector?.markSent();
             } catch (err) {
                 this.throttledLogAndSend({
                     type: 'PerParticipantVideoCaptureManagerCaptureFrameError',
@@ -519,6 +581,7 @@ class PerParticipantVideoCaptureManager {
             targetWidth,
             targetHeight,
             desiredFPS,
+            frameDelivery,
         });
 
         captureFrame();

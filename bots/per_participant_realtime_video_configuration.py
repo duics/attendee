@@ -6,18 +6,29 @@ RESOLUTION_PARAMS = {
     "1080p": {"width": 1920, "height": 1080, "framerate": 1.0, "jpeg_quality": 50},
 }
 
+FRAME_DELIVERY_CONTINUOUS = "continuous"
+FRAME_DELIVERY_ON_CHANGE = "on_change"
+FRAME_DELIVERY_MODES = (FRAME_DELIVERY_CONTINUOUS, FRAME_DELIVERY_ON_CHANGE)
+
 
 @dataclass(frozen=True)
 class PerParticipantRealtimeVideoSourceConfiguration:
     resolution: str = "360p"
+    frame_delivery: str = FRAME_DELIVERY_CONTINUOUS
 
     def __post_init__(self):
         if self.resolution not in ("none", "360p", "720p", "1080p"):
             raise ValueError(f"Invalid resolution: {self.resolution}. Must be one of: none, 360p, 720p, 1080p")
+        if self.frame_delivery not in FRAME_DELIVERY_MODES:
+            raise ValueError(f"Invalid frame_delivery: {self.frame_delivery}. Must be one of: {', '.join(FRAME_DELIVERY_MODES)}")
 
     @property
     def enabled(self) -> bool:
         return self.resolution != "none"
+
+    @property
+    def send_only_on_change(self) -> bool:
+        return self.frame_delivery == FRAME_DELIVERY_ON_CHANGE
 
     @property
     def width(self) -> int:
@@ -38,6 +49,7 @@ class PerParticipantRealtimeVideoSourceConfiguration:
     def to_dict(self) -> dict:
         return {
             "resolution": self.resolution,
+            "frame_delivery": self.frame_delivery,
             "width": self.width,
             "height": self.height,
             "framerate": self.framerate,

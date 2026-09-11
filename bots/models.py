@@ -1111,6 +1111,16 @@ class Bot(models.Model):
         websocket_per_participant_video_settings = websocket_settings.get("per_participant_video") or {}
         return websocket_per_participant_video_settings.get("screenshare_resolution", "360p")
 
+    def websocket_per_participant_video_webcam_frame_delivery(self):
+        websocket_settings = self.settings.get("websocket_settings") or {}
+        websocket_per_participant_video_settings = websocket_settings.get("per_participant_video") or {}
+        return websocket_per_participant_video_settings.get("webcam_frame_delivery", "continuous")
+
+    def websocket_per_participant_video_screenshare_frame_delivery(self):
+        websocket_settings = self.settings.get("websocket_settings") or {}
+        websocket_per_participant_video_settings = websocket_settings.get("per_participant_video") or {}
+        return websocket_per_participant_video_settings.get("screenshare_frame_delivery", "continuous")
+
     def should_use_room_sync(self):
         return bool(self.room_sync_livekit_room_name())
 
